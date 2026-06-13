@@ -1,0 +1,39 @@
+<x_0.752><y_0.2805>8<x_0.7568><y_0.2852><class_Page-header>
+
+<x_0.2451><y_0.2961><tbc>\(B(J/\psi\rightarrow p\mathaccent\unknown{p}\omega)=(1.10\pm 0.15)\cdot 10^{-3}\), which combined with the PDG \(J/\psi\) total width gives an experimental partial width of<x_0.4922><y_0.3172><class_Text>
+
+<x_0.3027><y_0.3242>\(\Gamma(J/\psi\rightarrow p\mathaccent\unknown{p}\omega)=103\pm 14\mathrm{eV}.\) (31)<x_0.4922><y_0.3305><class_Formula>
+
+<x_0.2451><y_0.3375>The fact that this is approximately equal to the \(p\mathaccent\unknown{p}\pi^0\) partial width [19] despite the much smaller phase space suggests a robust \(NN\omega\) coupling.<x_0.4922><y_0.3586><class_Text>
+
+<x_0.2451><y_0.3602>On evaluating this theoretical decay rate by integrating Eq. [15] numerically with physical masses, both \(NN\omega\) couplings free, and (as used previously) \(g_{J/\psi p\mathaccent\unknown{p}}=1.62\cdot 10^{-3}\), we find<x_0.4922><y_0.3883><class_Text>
+
+<x_0.2461><y_0.3953>\(\Gamma(J/\psi\rightarrow p\mathaccent\unknown{p}\omega)=\alpha_\omega\cdot\left(2.468-1.101\kappa_\omega+0.886\kappa_\omega^2\right)\mathrm{eV}.\) (32)<x_0.4922><y_0.4133><class_Formula>
+
+<x_0.2451><y_0.4141>The single number \(\Gamma(J/\psi\rightarrow p\mathaccent\unknown{p}\omega)\) alone does not suffice to determine the \(NN\omega\) strong couplings since there are two free parameters, \(g_\omega\) and \(\kappa_\omega\). If we set \(\kappa_\omega=0\), following CD-Bonn [15] and the Sato-Lee photoproduction study [33], the measured partial width [31] and the theoretical decay rate [32] imply \(g_\omega=23\pm 3\) (provided that meson emission dominates this decay). This \(g_\omega\) is rather larger than these references prefer for \(g_\omega\); it is consistent however with the EM form factor fit of Mergell _et al._ [34] and the range \(18\pm 8\) reported by Zhu [37] from QCD sum rules. If we instead assume the <sup>3</sup>P<sub>0</sub> quark model value \(\kappa_\omega=-3/2\) for the Pauli term [34], we find \(g_\omega=14.6\pm 2.0\), which is consistent with the values quoted by _NN_ scattering studies, and is somewhat larger than the photoproduction value.<x_0.4922><y_0.5219><class_Text>
+
+<x_0.2451><y_0.5234>It is possible to estimate the two parameters \(g_\omega\) and \(\kappa_\omega\) independently through a more detailed comparison be<tbc><x_0.4922><y_0.5367><class_Text>
+
+<x_0.5098><y_0.2969><tbc>tween \(J/\psi\rightarrow p\mathaccent\unknown{p}\omega\) data and the theoretical DP event density, Eq. [15]. This theoretical event density is strongly dependent on the Pauli coefficient \(\kappa_\omega\): with \(\kappa_\omega=0\) the event density at lower \(M_{p\mathaccent\unknown{p}}\) is strongly suppressed (see Fig[1]).<x_0.7568><y_0.3312><class_Text>
+
+<x_0.5098><y_0.3328>In contrast, for moderately large \(|\kappa_\omega|\), such as the quark model value \(\kappa_\omega=-3/2\), the theoretical DP event density is closer to uniform. This is illustrated in Fig[5] which shows this event density along the diagonal \(M_{p\omega}^2=M_{p\omega}^2\) (relative to the maximum value on diago nal) for various \(\kappa_\omega\le 0\). If the meson emission model does give a good description of this decay, evidently it may be possible to determine \(\kappa_\omega\) by comparing the \(J/\psi\rightarrow p\mathaccent\unknown{p}\omega\) DP event density on diagonal to the prediction in Fig[5]<x_0.7568><y_0.3969><class_Text>
+
+<x_0.5195><y_0.4148><x_0.7451><y_0.5156><class_Picture>
+
+<x_0.5107><y_0.525>FIG. 5: Theoretical \(J/\psi\rightarrow p\mathaccent\unknown{p}\omega\) DP event density along the diagonal \(M_{p\omega}^2=M_{p\omega}^2\), showing the strong \(\kappa_\omega\) dependence.<x_0.7568><y_0.5383><class_Text>
+
+<x_0.2578><y_0.5523><x_0.4795><y_0.6883><class_Picture>
+
+<x_0.2451><y_0.6977>FIG. 4: Theoretical relative \(J/\psi\rightarrow p\mathaccent\unknown{p}\omega\) DP event density for \(\kappa_\omega=0\), from Eq. [15]. Note the suppression near \(p\mathaccent\unknown{p}\) threshold (upper right).<x_0.4922><y_0.7172><class_Caption>
+
+<x_0.5713><y_0.5625>## G. Other \(\Psi\rightarrow p\mathaccent\unknown{p}V\) decays<x_0.6963><y_0.5672><class_Section-header>
+
+<x_0.5098><y_0.5781>Other decays to \(p\mathaccent\unknown{p}V\) final states that are closely related to \(J/\psi\rightarrow p\mathaccent\unknown{p}\omega\) include \(J/\psi\rightarrow p\mathaccent\unknown{p}\rho^0\) and \(J/\psi\rightarrow p\mathaccent\unknown{p}\phi\). In the meson emission model these are both described by the decay formula [15], albeit with different vector meson masses and _NNV_ couplings. Given the rounded PDG masses \(m_{\rho^0}=0.7755\) GeV and \(m_\phi=1.0195\) GeV, we predict the numerical decay widths<x_0.7568><y_0.6273><class_Text>
+
+<x_0.5117><y_0.6344>\(\Gamma(J/\psi\rightarrow p\mathaccent\unknown{p}\rho^0)=\alpha_\rho\cdot\left(2.614-1.155\kappa_\rho+0.930\kappa_\rho^2\right)\mathrm{eV}\) (33)<x_0.7568><y_0.6523><class_Formula>
+
+<x_0.5098><y_0.6539>and<x_0.5264><y_0.6586><class_Text>
+
+<x_0.5117><y_0.6648>\(\Gamma(J/\psi\rightarrow p\mathaccent\unknown{p}\phi)=\alpha_\phi\cdot\left(0.184-0.109\kappa_\phi+0.087\kappa_\phi^2\right)\mathrm{eV}.\) (34)<x_0.7568><y_0.6828><class_Formula>
+
+<x_0.5098><y_0.6844>The \(\rho^0\) case is especially interesting due to the range of values reported for \(\kappa_\rho\), as discussed by Brown and Machleidt [38]. Although vector dominance predicts \(\kappa_\rho=3.7\) "weak \(\rho^*\), and some data has been interpreted as supporting this, fits to \(\pi\pi\rightarrow NN\) and S-D mixing in _NN_<x_0.7568><y_0.7195><class_Text>

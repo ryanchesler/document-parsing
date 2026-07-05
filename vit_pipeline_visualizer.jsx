@@ -16,6 +16,8 @@ const pages = [
   { id: 'encoder',  title: 'Inside the ViT encoder',     subtitle: 'Attention + MLP shapes through one transformer block' },
   { id: 'compress', title: '2×2 visual-token compression', subtitle: 'Pixel-shuffle / patch-merge: 4 tokens → 1' },
   { id: 'decoder',  title: 'Into the text decoder',       subtitle: 'Projector, sequence assembly, autoregressive decode' },
+  { id: 'tokens',   title: 'Image vs text: the compression illusion', subtitle: 'Side-by-side paths, compute at every phase, and what reaches the decoder' },
+  { id: 'volume',   title: 'Feature width & data volume',  subtitle: 'How thick each token is, and how much data flows at each stage' },
   { id: 'playground', title: 'Shape playground',          subtitle: 'Turn every knob, watch every tensor recompute' },
 ];
 
@@ -27,6 +29,10 @@ const C_ATTN  = '#d97706'; // amber    — attention
 const C_COMP  = '#0d9488'; // teal     — compression
 const C_TEXT  = '#16a34a'; // green    — text / decoder
 const C_GREY  = '#64748b';
+
+// A real, text-dense page (served from /public/resources/) so patching is shown on actual text.
+const BASE = import.meta.env.BASE_URL;
+const IMG_DOC = `${BASE}resources/output.jpeg`;
 
 // ─── Live shape engine ────────────────────────────────────────────────────────
 // Everything downstream is a pure function of this config, so every chapter shows
@@ -63,12 +69,40 @@ function derive(cfg) {
     + 2 * seqIn * (2 * mlpRatio * D * D) // MLP
   );
 
+  // Feature width (channels per token/pixel) at each point
+  const mlpDim = mlpRatio * D;
+  const feat = {
+    pixel: C,             // channels per pixel
+    patch: patchDim,      // C·P·P per patch after flatten
+    embed: D,             // hidden dim
+    head: headDim,        // per-head width
+    mlp: mlpDim,          // widened MLP hidden
+    merged: mergedDim,    // D·merge² after concat
+    compressed: D,        // back to D after projection
+    llm: Dllm,            // decoder embedding width
+  };
+
+  // Data volume (element count = product of all dims) at each point
+  const vol = {
+    image: H * W * C,
+    patches: N * patchDim,                 // == image (pure reshape)
+    embed: seqIn * D,
+    attnPerLayer: heads * seqIn * seqIn,   // the transient attention matrix
+    mlpPerLayer: seqIn * mlpDim,           // transient MLP activation
+    encOut: seqIn * D,
+    mergeConcat: mergedGrid * mergedGrid * mergedDim, // == encOut (moved, not lost)
+    compressed: visualTokens * D,
+    projected: visualTokens * Dllm,
+    decoder: seqLen * Dllm,
+  };
+
   return {
-    H, W, N, patchDim, headDim, seqIn,
+    H, W, N, patchDim, headDim, seqIn, mlpDim,
     mergedGrid, Ncomp, mergedDim, visualTokens, seqLen,
     compressRatio: N / Ncomp,
     patchEmbedParams, posParams, encoderParams, projectorParams, vitTotal,
     gflops: flForward / 1e9,
+    feat, vol,
   };
 }
 
@@ -329,11 +363,11 @@ function OverviewPage({ d, cfg }) {
 // CHAPTER 1 — Patchify
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function PatchGrid({ grid, size = 300, highlight }) {
+function PatchGrid({ grid, size = 300, highlight, src, merge = 1, lineOpacity = 0.5 }) {
   const cell = size / grid;
+  const mg = Math.floor(grid / merge);
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} className="rounded-lg border" style={{ background: '#f8fafc', maxWidth: '100%' }}>
-      {/* faux "image" gradient */}
       <defs>
         <linearGradient id="imgGrad" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#bae6fd" />
@@ -341,13 +375,23 @@ function PatchGrid({ grid, size = 300, highlight }) {
           <stop offset="100%" stopColor="#a7f3d0" />
         </linearGradient>
       </defs>
-      <rect x={0} y={0} width={size} height={size} fill="url(#imgGrad)" />
+      {src
+        ? <image href={src} x={0} y={0} width={size} height={size} preserveAspectRatio="xMidYMid slice" />
+        : <rect x={0} y={0} width={size} height={size} fill="url(#imgGrad)" />}
+      {/* patch grid */}
       {Array.from({ length: grid + 1 }).map((_, i) => (
         <g key={i}>
-          <line x1={i * cell} y1={0} x2={i * cell} y2={size} stroke={C_PATCH} strokeWidth={0.6} opacity={0.5} />
-          <line x1={0} y1={i * cell} x2={size} y2={i * cell} stroke={C_PATCH} strokeWidth={0.6} opacity={0.5} />
+          <line x1={i * cell} y1={0} x2={i * cell} y2={size} stroke={C_PATCH} strokeWidth={0.6} opacity={lineOpacity} />
+          <line x1={0} y1={i * cell} x2={size} y2={i * cell} stroke={C_PATCH} strokeWidth={0.6} opacity={lineOpacity} />
         </g>
       ))}
+      {/* merge-group borders: each teal box becomes ONE compressed token */}
+      {merge > 1 && Array.from({ length: mg }).flatMap((_, r) =>
+        Array.from({ length: mg }).map((_, c) => (
+          <rect key={`g${r}-${c}`} x={c * merge * cell} y={r * merge * cell}
+            width={merge * cell} height={merge * cell} fill="none" stroke={C_COMP} strokeWidth={1.6} />
+        ))
+      )}
       {highlight != null && (
         <rect
           x={(highlight % grid) * cell} y={Math.floor(highlight / grid) * cell}
@@ -373,24 +417,25 @@ function PatchifyPage({ d, cfg }) {
         </CardHeader>
         <CardContent className="p-6 pt-2 space-y-5">
           <p className="text-sm opacity-85 leading-relaxed">
-            A transformer has no notion of "2D". So the first job is to slice the image into a{' '}
-            <strong>{cfg.grid}×{cfg.grid} grid</strong> of non-overlapping <strong>{cfg.P}×{cfg.P}</strong> patches,
-            then flatten each patch into a single long vector. Click a cell to trace one patch through the reshape.
+            A transformer has no notion of "2D". So the first job is to slice this <strong>real page of text</strong> into a{' '}
+            <strong>{cfg.grid}×{cfg.grid} grid</strong> of non-overlapping <strong>{cfg.P}×{cfg.P}px</strong> tiles,
+            then flatten each tile's <span className="font-mono">{cfg.P}·{cfg.P}·{cfg.C} = {d.patchDim.toLocaleString()}</span>{' '}
+            pixel values into a single long vector. Click a cell to trace one patch through the reshape.
           </p>
 
           <div className="grid md:grid-cols-2 gap-6 items-start">
             <div className="space-y-2">
               <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Input image — {d.H}×{d.W}×{cfg.C}
+                Input image — {d.H}×{d.W}×{cfg.C} · {d.N.toLocaleString()} tiles of {cfg.P}×{cfg.P}px
               </div>
-              <PatchGrid grid={cfg.grid} highlight={hi} />
+              <PatchGrid grid={cfg.grid} highlight={hi} src={IMG_DOC} lineOpacity={0.85} />
               <input
                 type="range" min={0} max={d.N - 1} value={hi}
                 onChange={e => setHi(Number(e.target.value))}
                 className="w-full accent-violet-600 cursor-pointer"
               />
               <div className="text-xs text-muted-foreground text-center">
-                patch #{hi} → grid position (row {row}, col {col})
+                patch #{hi} → grid position (row {row}, col {col}) → one tile of {cfg.P}×{cfg.P}px text
               </div>
             </div>
 
@@ -746,7 +791,406 @@ function DecoderPage({ d, cfg }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHAPTER 6 — Shape playground
+// CHAPTER 6 — Image vs text: the compression illusion
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// One phase in a path: shape, volume, compute this phase, and cumulative-compute meter.
+function StageBox({ i, color, name, dims, volume, phase, cum, total, note }) {
+  const pct = total > 0 ? Math.max(cum > 0 ? 3 : 0, (cum / total) * 100) : 0;
+  const gf = (x) => (x >= 100 ? x.toFixed(0) : x >= 1 ? x.toFixed(1) : x.toFixed(2));
+  return (
+    <div className="rounded-xl border p-3 space-y-1.5" style={{ borderColor: color + '55', background: color + '08' }}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-bold" style={{ color }}>{i}. {name}</span>
+        <span className="font-mono text-[10px] font-bold whitespace-nowrap" style={{ color }}>[ {dims.join(' × ')} ]</span>
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>vol {volume != null ? fmtCompact(volume) : '—'}</span>
+        <span className="font-semibold" style={{ color: phase > 0 ? C_ATTN : '#94a3b8' }}>
+          {phase > 0 ? `+${gf(phase)} GF` : 'no matmul'}
+        </span>
+      </div>
+      <div className="h-1.5 rounded bg-neutral-100 overflow-hidden">
+        <div className="h-full rounded transition-all" style={{ width: `${pct}%`, background: C_ATTN }} />
+      </div>
+      <div className="flex items-center justify-between text-[9px] text-muted-foreground gap-2">
+        <span className="leading-tight">{note}</span>
+        <span className="whitespace-nowrap font-mono">Σ {gf(cum)} GF</span>
+      </div>
+    </div>
+  );
+}
+
+const TEXT_SAMPLE = `Revenue grew 18% year over year,
+driven by enterprise adoption in
+North America and APAC. Operating
+margin improved to 24.3%, up from
+21.1% in the prior year. The board
+approved a quarterly dividend of
+$0.42 per share, payable Nov 15…`;
+
+function IllusionPage({ d, cfg }) {
+  const [words, setWords] = useState(768);   // ≈ a dense single page
+  const WORDS_PER_TT = 0.75;                 // ~4 chars/token → ~0.75 words/token (English BPE)
+  const CHARS_PER_WORD = 6;
+
+  const textTokens = Math.round(words / WORDS_PER_TT);
+  const chars = Math.round(words * CHARS_PER_WORD);
+
+  const visPre = d.N;                         // patch tokens the ViT first produces
+  const visPost = d.visualTokens;             // after 2×2 compression → what hits the decoder
+  const compressX = visPre / visPost;
+
+  // Per-phase compute in GFLOPs (multiply-adds ×2). Text path is a lookup ⇒ ~0 matmul.
+  const GF = 1e9;
+  const flPatchEmbed = (2 * visPre * d.patchDim * cfg.D) / GF;
+  const flEncoder = d.gflops;                                  // full ViT forward
+  const flMerge = (2 * visPost * d.mergedDim * cfg.D) / GF;    // project concat(m²·D) → D
+  const flProject = (2 * visPost * cfg.D * cfg.Dllm) / GF;     // D → D_llm
+  const visionGF = flPatchEmbed + flEncoder + flMerge + flProject;
+
+  // Volumes reaching the decoder (elements = tokens × D_llm)
+  const textVol = textTokens * cfg.Dllm;
+  const visVol = visPost * cfg.Dllm;
+
+  // Packing density — the real story. A "token" is a sequence slot, not a unit of info.
+  const charsPerText = chars / textTokens;   // ≈ 4–4.5, fixed by the tokenizer's design
+  const charsPerVis = chars / visPost;       // the ViT crams a whole tile of glyphs per slot
+  const densityRatio = charsPerVis / charsPerText;
+
+  // Both representations dwarf the page's actual information — capacity was never the limit.
+  const BITS_PER_ELEM = 16;                   // bf16 activations
+  const pageInfoBits = chars * 1.1;           // ~1.1 bits/char (English entropy, in context)
+  const textCapBits = textVol * BITS_PER_ELEM;
+  const visCapBits = visVol * BITS_PER_ELEM;
+  const maxCapBits = Math.max(textCapBits, visCapBits, pageInfoBits);
+  const overProvVis = visCapBits / pageInfoBits;
+
+  // Vision path stages with cumulative compute
+  let cum = 0;
+  const visStages = [
+    { color: C_PIX,   name: 'Image',                    dims: [d.H, d.W, cfg.C],     volume: d.vol.image,       phase: 0,            note: 'raw pixels' },
+    { color: C_PATCH, name: 'Patchify',                 dims: [visPre, d.patchDim],  volume: d.vol.patches,     phase: 0,            note: 'reshape — no math' },
+    { color: C_EMB,   name: 'Patch embedding',          dims: [visPre, cfg.D],       volume: visPre * cfg.D,    phase: flPatchEmbed, note: 'linear projection' },
+    { color: C_ATTN,  name: `ViT encoder ×${cfg.layers}`, dims: [d.seqIn, cfg.D],    volume: d.vol.encOut,      phase: flEncoder,    note: 'attention + MLP — the bulk' },
+    { color: C_COMP,  name: `2×2 compression`,          dims: [visPost, d.mergedDim], volume: d.vol.mergeConcat, phase: flMerge,      note: `${cfg.merge}×${cfg.merge} merge + project` },
+    { color: C_TEXT,  name: 'Projector → decoder',      dims: [visPost, cfg.Dllm],   volume: visVol,            phase: flProject,    note: 'to LLM dim' },
+  ].map(s => { cum += s.phase; return { ...s, cum }; });
+
+  // Text path stages — compute stays at zero
+  const txtStages = [
+    { color: C_TEXT, name: 'Page as text',       dims: [`${chars.toLocaleString()} chars`],      volume: null,     phase: 0, cum: 0, note: `${words} words` },
+    { color: C_TEXT, name: 'Tokenize (BPE)',     dims: [`${textTokens.toLocaleString()} IDs`],   volume: textTokens, phase: 0, cum: 0, note: 'string ops — no matmul' },
+    { color: C_TEXT, name: 'Embedding lookup',   dims: [textTokens, cfg.Dllm],                   volume: textVol,  phase: 0, cum: 0, note: 'gather from table' },
+    { color: C_TEXT, name: 'Straight to decoder', dims: [textTokens, cfg.Dllm],                  volume: textVol,  phase: 0, cum: 0, note: 'no encoder needed' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Framing + shared slider */}
+      <Card className="rounded-3xl shadow-sm">
+        <CardHeader className="pb-2">
+          <SectionLabel color={C_COMP}>Two paths to the decoder</SectionLabel>
+          <CardTitle className="text-xl">The same page as an image vs. as text — and the compute each path spends</CardTitle>
+        </CardHeader>
+        <CardContent className="p-6 pt-2 space-y-4">
+          <p className="text-sm opacity-85 leading-relaxed">
+            Follow one page down both columns. The <strong style={{ color: C_ATTN }}>vision path</strong> (left) pours{' '}
+            <strong>{visionGF.toFixed(0)} GFLOPs</strong> of encoder compute into shrinking{' '}
+            <span className="font-mono">{visPre.toLocaleString()}</span> patch tokens down to{' '}
+            <span className="font-mono">{visPost.toLocaleString()}</span>. The{' '}
+            <strong style={{ color: C_TEXT }}>text path</strong> (right) spends essentially <strong>zero</strong> — tokenizing
+            is a table lookup. The amber meter on each stage shows compute accumulating (both columns share the same scale).
+          </p>
+          <div className="max-w-md">
+            <Slider label="Words on the page" value={words} min={100} max={1400} step={10} onChange={setWords}
+              suffix={` ≈ ${chars.toLocaleString()} chars → ${textTokens.toLocaleString()} text tokens`} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Side-by-side paths */}
+      <div className="grid md:grid-cols-2 gap-6 items-start">
+        {/* Vision path */}
+        <Card className="rounded-3xl shadow-sm">
+          <CardHeader className="pb-2">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <SectionLabel color={C_ATTN}>Vision path</SectionLabel>
+                <CardTitle className="text-base">Image → patches → ViT → compress → tokens</CardTitle>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-xl font-bold font-mono" style={{ color: C_ATTN }}>{visionGF.toFixed(0)}</div>
+                <div className="text-[10px] text-muted-foreground">GFLOPs total</div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-4 pt-0 space-y-1">
+            <div className="mb-3 flex justify-center">
+              <PatchGrid grid={cfg.grid} size={190} src={IMG_DOC} merge={cfg.merge} lineOpacity={0.5} />
+            </div>
+            {visStages.map((s, idx) => (
+              <div key={idx}>
+                <StageBox i={idx + 1} color={s.color} name={s.name} dims={s.dims} volume={s.volume}
+                  phase={s.phase} cum={s.cum} total={visionGF} note={s.note} />
+                {idx < visStages.length - 1 && <div className="text-center text-slate-300 text-sm leading-none py-0.5">↓</div>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        {/* Text path */}
+        <Card className="rounded-3xl shadow-sm">
+          <CardHeader className="pb-2">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <SectionLabel color={C_TEXT}>Text path</SectionLabel>
+                <CardTitle className="text-base">Text → tokenize → embedding lookup</CardTitle>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-xl font-bold font-mono" style={{ color: C_TEXT }}>≈ 0</div>
+                <div className="text-[10px] text-muted-foreground">GFLOPs total</div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-4 pt-0 space-y-1">
+            <div className="mb-3 flex justify-center">
+              <div className="rounded-lg border p-3 font-mono text-[9px] leading-relaxed text-slate-500 whitespace-pre-wrap overflow-hidden"
+                style={{ width: 190, height: 190, background: '#f8fafc' }}>
+                {TEXT_SAMPLE}
+              </div>
+            </div>
+            {txtStages.map((s, idx) => (
+              <div key={idx}>
+                <StageBox i={idx + 1} color={s.color} name={s.name} dims={s.dims} volume={s.volume}
+                  phase={s.phase} cum={s.cum} total={visionGF} note={s.note} />
+                {idx < txtStages.length - 1 && <div className="text-center text-slate-300 text-sm leading-none py-0.5">↓</div>}
+              </div>
+            ))}
+            <div className="rounded-xl border border-dashed p-3 text-[10px] text-muted-foreground leading-relaxed mt-1">
+              No patchify, no encoder, no compression. The text is already a sequence of symbols — it goes almost straight
+              to the decoder. That's why the amber compute meter never fills on this side.
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Finale: compute in, packing density out */}
+      <Card className="rounded-3xl shadow-sm">
+        <CardHeader className="pb-2">
+          <SectionLabel color={C_COMP}>At the decoder door</SectionLabel>
+          <CardTitle className="text-lg">Compute in, packing density out — why fewer tokens still holds the page</CardTitle>
+        </CardHeader>
+        <CardContent className="p-6 pt-2 space-y-5">
+          <p className="text-sm opacity-85 leading-relaxed">
+            The trick to your friend's puzzle: a <strong>"token" is a sequence slot, not a unit of information</strong>.
+            Both paths hand the decoder the <em>same-size</em> {cfg.Dllm}-dim vectors — the only question is how densely
+            each slot is filled. The vision path spends compute to <strong>pack many glyphs into each slot</strong>; text
+            tokenization deliberately puts ~one sub-word per slot.
+          </p>
+
+          <div className="grid md:grid-cols-2 gap-6">
+            <div className="space-y-3">
+              <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: C_ATTN }}>Compute spent to get there</div>
+              <VolumeBar label="Vision path" value={visionGF} max={visionGF} color={C_ATTN}
+                shape={`${visionGF.toFixed(0)} GFLOPs`} display={`${visionGF.toFixed(0)} GF`} note="patch embed + encoder + compression + projector" />
+              <VolumeBar label="Text path" value={0.001} max={visionGF} color={C_TEXT}
+                shape="≈ 0 GFLOPs" display="~0" note="tokenize + embedding gather — no matmul" />
+            </div>
+            <div className="space-y-3">
+              <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: C_COMP }}>Characters packed per token slot</div>
+              <VolumeBar label="Text token" value={charsPerText} max={charsPerVis} color={C_TEXT}
+                shape="≈ 1 sub-word" display={`${charsPerText.toFixed(1)}`} note="one sub-word per slot — by tokenizer design" />
+              <VolumeBar label="Vision token" value={charsPerVis} max={charsPerVis} color={C_COMP}
+                shape={`${densityRatio.toFixed(1)}× denser`} display={`${charsPerVis.toFixed(0)}`} note="a whole tile of glyphs distilled into one slot" />
+            </div>
+          </div>
+
+          {/* Over-provisioning: capacity was never the bottleneck */}
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              How big is each container vs. the page's actual information? (raw capacity, bits)
+            </div>
+            <VolumeBar label="The page's actual text information" value={pageInfoBits} max={maxCapBits} color={C_GREY}
+              shape="the thing we're encoding" display={`${fmtCompact(pageInfoBits)}b`} note="≈ 1.1 bits/char in context" />
+            <VolumeBar label="Compressed image representation — raw capacity" value={visCapBits} max={maxCapBits} color={C_COMP}
+              shape={`${visPost.toLocaleString()} × ${cfg.Dllm} bf16`} display={`${fmtCompact(visCapBits)}b`} note={`still ~${fmtCompact(overProvVis)}× bigger than the page needs`} />
+            <VolumeBar label="Text representation — raw capacity" value={textCapBits} max={maxCapBits} color={C_TEXT}
+              shape={`${textTokens.toLocaleString()} × ${cfg.Dllm} bf16`} display={`${fmtCompact(textCapBits)}b`} note="vastly over-provisioned too" />
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="vision compute" value={`${visionGF.toFixed(0)} GF`} color={C_ATTN} mono />
+            <Stat label="text compute" value="≈ 0 GF" color={C_TEXT} mono />
+            <Stat label="chars/token: img vs text" value={`${charsPerVis.toFixed(0)} vs ${charsPerText.toFixed(1)}`} color={C_COMP} mono />
+            <Stat label="tokens: img vs text" value={`${visPost.toLocaleString()} vs ${textTokens.toLocaleString()}`} color={C_PATCH} mono />
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <InfoBox color={C_PATCH} title="Why fewer tokens ≠ less information">
+              Picture identical moving boxes (each a {cfg.Dllm}-float vector). Text puts <strong>one item per box</strong> →{' '}
+              {textTokens.toLocaleString()} boxes. The vision path runs a packing robot (the ViT, costing{' '}
+              {visionGF.toFixed(0)} GFLOPs) that crams <strong>~{charsPerVis.toFixed(0)} items per box</strong> →{' '}
+              {visPost.toLocaleString()} boxes. Fewer boxes doesn't mean less stuff — it's denser packing. And notice both
+              containers are <strong>~{fmtCompact(overProvVis)}×</strong> larger than the page's actual information, so
+              capacity was never the limit — <em>sequence length</em> was.
+            </InfoBox>
+            <InfoBox color={C_COMP} title="Denser packing, up to a fidelity budget">
+              This is real and current: encoding text <em>as an image</em> (e.g. DeepSeek-OCR's "optical context
+              compression", Glyph) buys roughly <strong>7–10× token compression at high fidelity</strong>, then degrades as
+              you push further — pack the boxes too tight and fine print, rare glyphs, and ambiguous characters get crushed.
+              So it's not that vision tokens hold <em>more than possible</em> — it's that text tokenization was leaving most
+              of each slot empty, and compute fills it.
+            </InfoBox>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHAPTER 7 — Feature width & data volume
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function fmtCompact(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+function VolumeBar({ label, value, max, color, shape, note, display }) {
+  const pct = Math.max(value > 0 ? 1.5 : 0, (value / max) * 100);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-xs font-semibold" style={{ color }}>{label}</span>
+        <span className="font-mono text-[11px] text-muted-foreground">{shape}</span>
+      </div>
+      <div className="relative h-6 rounded-md bg-neutral-100 overflow-hidden">
+        <div className="h-full rounded-md flex items-center justify-end pr-2" style={{ width: `${pct}%`, background: color }}>
+          <span className="text-[10px] font-bold text-white whitespace-nowrap">{display ?? fmtCompact(value)}</span>
+        </div>
+      </div>
+      {note && <div className="text-[10px] text-muted-foreground leading-tight">{note}</div>}
+    </div>
+  );
+}
+
+function VolumePage({ d, cfg }) {
+  const v = d.vol;
+  const f = d.feat;
+  // The attention matrix is often the biggest single tensor — include it in the scale.
+  const maxVol = Math.max(v.image, v.embed, v.attnPerLayer, v.mlpPerLayer, v.mergeConcat, v.compressed, v.projected, v.decoder);
+
+  const featSteps = [
+    { c: C_PIX,   label: 'per pixel',        val: f.pixel,      expr: `C = ${cfg.C}` },
+    { c: C_PATCH, label: 'per patch (flat)', val: f.patch,      expr: `C·P·P = ${cfg.C}·${cfg.P}·${cfg.P}` },
+    { c: C_EMB,   label: 'after embedding',  val: f.embed,      expr: `D = ${cfg.D}` },
+    { c: C_ATTN,  label: 'per attn head',    val: f.head,       expr: `D/h = ${cfg.D}/${cfg.heads}` },
+    { c: C_PATCH, label: 'MLP hidden',       val: f.mlp,        expr: `${cfg.mlpRatio}·D` },
+    { c: C_COMP,  label: 'merged (concat)',  val: f.merged,     expr: `D·${cfg.merge}² = ${cfg.D}·${cfg.merge * cfg.merge}` },
+    { c: C_COMP,  label: 'compressed token', val: f.compressed, expr: `back to D = ${cfg.D}` },
+    { c: C_TEXT,  label: 'decoder token',    val: f.llm,        expr: `D_llm = ${cfg.Dllm}` },
+  ];
+  const maxFeat = Math.max(...featSteps.map(s => s.val));
+
+  return (
+    <div className="space-y-6">
+      <Card className="rounded-3xl shadow-sm">
+        <CardHeader className="pb-2">
+          <SectionLabel color={C_COMP}>Two axes to track</SectionLabel>
+          <CardTitle className="text-xl">Feature width vs. total data volume</CardTitle>
+        </CardHeader>
+        <CardContent className="p-6 pt-2 space-y-5">
+          <p className="text-sm opacity-85 leading-relaxed">
+            Every tensor in the pipeline has two quantities worth watching separately. The{' '}
+            <strong>feature width</strong> is how many numbers describe a single token (its "thickness"). The{' '}
+            <strong>volume</strong> is the total element count — the product of <em>all</em> dimensions — which is the
+            real proxy for memory and compute. They move independently: a reshape can change the feature width while
+            leaving the volume untouched.
+          </p>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Stat label="pixels in image (H·W·C)" value={fmtCompact(v.image)} color={C_PIX} mono />
+            <Stat label="feature dim D" value={cfg.D.toLocaleString()} color={C_EMB} mono />
+            <Stat label="biggest attn matrix (h·N²)" value={fmtCompact(v.attnPerLayer)} color={C_ATTN} mono />
+            <Stat label="decoder input volume" value={fmtCompact(v.decoder)} color={C_TEXT} mono />
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid lg:grid-cols-2 gap-6 items-start">
+        {/* Feature width journey */}
+        <Card className="rounded-3xl shadow-sm">
+          <CardHeader className="pb-2"><CardTitle className="text-lg">Feature width at each point</CardTitle></CardHeader>
+          <CardContent className="p-6 pt-0 space-y-3">
+            <p className="text-xs opacity-75 leading-relaxed">
+              How many channels describe one token as it travels. Note the jump from <span className="font-mono">{cfg.C}</span>{' '}
+              (a raw pixel) to <span className="font-mono">{d.patchDim.toLocaleString()}</span> (a flattened patch), and the
+              temporary bulges in the MLP and at the 2×2 concat.
+            </p>
+            {featSteps.map((s, i) => (
+              <VolumeBar key={i} label={s.label} value={s.val} max={maxFeat} color={s.c}
+                shape={`${s.val.toLocaleString()}`} note={s.expr} />
+            ))}
+          </CardContent>
+        </Card>
+
+        {/* Volume journey */}
+        <Card className="rounded-3xl shadow-sm">
+          <CardHeader className="pb-2"><CardTitle className="text-lg">Data volume at each point</CardTitle></CardHeader>
+          <CardContent className="p-6 pt-0 space-y-3">
+            <p className="text-xs opacity-75 leading-relaxed">
+              Total elements = product of every dimension. Watch which stages preserve volume (reshapes) versus which
+              actually grow or shrink it.
+            </p>
+            <VolumeBar label="Image" value={v.image} max={maxVol} color={C_PIX} shape={`${d.H}×${d.W}×${cfg.C}`} note="H · W · C pixels" />
+            <VolumeBar label="Patch sequence" value={v.patches} max={maxVol} color={C_PATCH} shape={`${d.N}×${d.patchDim}`} note="= image exactly — patchify is a pure reshape" />
+            <VolumeBar label="Patch embeddings" value={v.embed} max={maxVol} color={C_EMB} shape={`${d.seqIn}×${cfg.D}`} note={`first real change: ${d.patchDim} → ${cfg.D} per token`} />
+            <VolumeBar label="Attention matrix (per block)" value={v.attnPerLayer} max={maxVol} color={C_ATTN} shape={`${cfg.heads}×${d.seqIn}×${d.seqIn}`} note="transient, scales with N² — often the memory bottleneck" />
+            <VolumeBar label="MLP activation (per block)" value={v.mlpPerLayer} max={maxVol} color={C_PATCH} shape={`${d.seqIn}×${d.mlpDim}`} note={`transient, ${cfg.mlpRatio}× the token block`} />
+            <VolumeBar label="Merge concat" value={v.mergeConcat} max={maxVol} color={C_COMP} shape={`${d.mergedGrid}×${d.mergedGrid}×${d.mergedDim}`} note="= encoder output — volume moved seq → channels, not lost" />
+            <VolumeBar label="Compressed tokens" value={v.compressed} max={maxVol} color={C_COMP} shape={`${d.visualTokens}×${cfg.D}`} note={`${d.compressRatio}× smaller than encoder output (channels projected back to D)`} />
+            <VolumeBar label="Projected to LLM" value={v.projected} max={maxVol} color={C_TEXT} shape={`${d.visualTokens}×${cfg.Dllm}`} note={`re-widened to D_llm = ${cfg.Dllm}`} />
+            <VolumeBar label="Decoder input" value={v.decoder} max={maxVol} color={C_TEXT} shape={`${d.seqLen}×${cfg.Dllm}`} note={`+${cfg.textTokens} text tokens`} />
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="rounded-3xl shadow-sm">
+        <CardHeader className="pb-2"><CardTitle className="text-lg">Four things this view makes obvious</CardTitle></CardHeader>
+        <CardContent className="p-6 pt-0 grid md:grid-cols-2 gap-4">
+          <InfoBox color={C_PATCH} title="Patchify is free (volume-wise)">
+            <span className="font-mono text-xs">H·W·C = N·(C·P·P)</span> — {fmtCompact(v.image)} either way. The image
+            isn't compressed by patchify; the same numbers are just regrouped from a <span className="font-mono">{cfg.C}</span>-channel
+            grid into <span className="font-mono">{d.N.toLocaleString()}</span> vectors of width {d.patchDim.toLocaleString()}.
+          </InfoBox>
+          <InfoBox color={C_EMB} title="Embedding sets the working width">
+            The projection to <span className="font-mono">D = {cfg.D}</span> is where the model picks its internal
+            "resolution." From here until compression, every token carries exactly {cfg.D} numbers, so the working
+            volume is <span className="font-mono">{d.seqIn.toLocaleString()} × {cfg.D} = {fmtCompact(v.embed)}</span>.
+          </InfoBox>
+          <InfoBox color={C_ATTN} title="The attention matrix is the hidden giant">
+            At <span className="font-mono">{cfg.heads}×{d.seqIn}×{d.seqIn} = {fmtCompact(v.attnPerLayer)}</span> elements
+            per block, it's {v.attnPerLayer >= v.embed ? `${(v.attnPerLayer / v.embed).toFixed(1)}× larger` : 'comparable to'} the
+            token tensor and grows with N². This is why high resolution hurts and why token compression exists.
+          </InfoBox>
+          <InfoBox color={C_COMP} title="Compression moves, then trims">
+            The 2×2 concat is volume-neutral (<span className="font-mono">{fmtCompact(v.mergeConcat)}</span>) — it trades
+            {d.compressRatio}× fewer tokens for {cfg.merge * cfg.merge}× wider ones. Only the projection back to{' '}
+            <span className="font-mono">D</span> actually removes data, cutting the token tensor to{' '}
+            <span className="font-mono">{fmtCompact(v.compressed)}</span>.
+          </InfoBox>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHAPTER 8 — Shape playground
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function divisorsOf(n) {
@@ -761,17 +1205,18 @@ function PlaygroundPage({ cfg, setCfg, d }) {
   const headOptions = divisorsOf(cfg.D).filter(h => h >= 4 && h <= 32 && cfg.D / h >= 32 && cfg.D / h <= 128);
 
   const rows = [
-    { c: C_PIX, stage: 'Input image', shape: `${d.H} × ${d.W} × ${cfg.C}`, note: 'raw RGB pixels' },
-    { c: C_PATCH, stage: 'Patch sequence', shape: `${d.N} × ${d.patchDim}`, note: `${cfg.grid}×${cfg.grid} flattened P·P·C` },
-    { c: C_EMB, stage: 'Patch embeddings', shape: `${d.N} × ${cfg.D}`, note: 'linear projection to D' },
-    { c: C_EMB, stage: cfg.cls ? 'Encoder input (+CLS +pos)' : 'Encoder input (+pos)', shape: `${d.seqIn} × ${cfg.D}`, note: 'positions added' },
-    { c: C_ATTN, stage: 'Per-head Q/K/V', shape: `${cfg.heads} × ${d.seqIn} × ${d.headDim}`, note: `${cfg.heads} heads · d_head=${d.headDim}` },
-    { c: C_ATTN, stage: 'Attention matrix', shape: `${cfg.heads} × ${d.seqIn} × ${d.seqIn}`, note: 'per block' },
-    { c: C_EMB, stage: `Encoder output (×${cfg.layers})`, shape: `${d.seqIn} × ${cfg.D}`, note: 'shape preserved' },
-    { c: C_COMP, stage: 'Merged (concat channels)', shape: `${d.mergedGrid} × ${d.mergedGrid} × ${d.mergedDim}`, note: `${cfg.merge}×${cfg.merge} groups` },
-    { c: C_COMP, stage: 'Compressed visual tokens', shape: `${d.visualTokens} × ${cfg.D}`, note: `${d.compressRatio}× fewer tokens` },
-    { c: C_TEXT, stage: 'Projected visual tokens', shape: `${d.visualTokens} × ${cfg.Dllm}`, note: 'mapped to LLM dim' },
-    { c: C_TEXT, stage: 'Decoder input', shape: `${d.seqLen} × ${cfg.Dllm}`, note: `+${cfg.textTokens} text tokens` },
+    { c: C_PIX, stage: 'Input image', shape: `${d.H} × ${d.W} × ${cfg.C}`, feat: cfg.C, vol: d.vol.image, note: 'raw RGB pixels' },
+    { c: C_PATCH, stage: 'Patch sequence', shape: `${d.N} × ${d.patchDim}`, feat: d.patchDim, vol: d.vol.patches, note: `${cfg.grid}×${cfg.grid} flattened P·P·C` },
+    { c: C_EMB, stage: 'Patch embeddings', shape: `${d.N} × ${cfg.D}`, feat: cfg.D, vol: d.N * cfg.D, note: 'linear projection to D' },
+    { c: C_EMB, stage: cfg.cls ? 'Encoder input (+CLS +pos)' : 'Encoder input (+pos)', shape: `${d.seqIn} × ${cfg.D}`, feat: cfg.D, vol: d.vol.embed, note: 'positions added' },
+    { c: C_ATTN, stage: 'Per-head Q/K/V', shape: `${cfg.heads} × ${d.seqIn} × ${d.headDim}`, feat: d.headDim, vol: cfg.heads * d.seqIn * d.headDim, note: `${cfg.heads} heads · d_head=${d.headDim}` },
+    { c: C_ATTN, stage: 'Attention matrix', shape: `${cfg.heads} × ${d.seqIn} × ${d.seqIn}`, feat: d.seqIn, vol: d.vol.attnPerLayer, note: 'per block · scales with N²' },
+    { c: C_PATCH, stage: 'MLP hidden', shape: `${d.seqIn} × ${d.mlpDim}`, feat: d.mlpDim, vol: d.vol.mlpPerLayer, note: `per block · ${cfg.mlpRatio}× wide` },
+    { c: C_EMB, stage: `Encoder output (×${cfg.layers})`, shape: `${d.seqIn} × ${cfg.D}`, feat: cfg.D, vol: d.vol.encOut, note: 'shape preserved' },
+    { c: C_COMP, stage: 'Merged (concat channels)', shape: `${d.mergedGrid} × ${d.mergedGrid} × ${d.mergedDim}`, feat: d.mergedDim, vol: d.vol.mergeConcat, note: `${cfg.merge}×${cfg.merge} groups` },
+    { c: C_COMP, stage: 'Compressed visual tokens', shape: `${d.visualTokens} × ${cfg.D}`, feat: cfg.D, vol: d.vol.compressed, note: `${d.compressRatio}× fewer tokens` },
+    { c: C_TEXT, stage: 'Projected visual tokens', shape: `${d.visualTokens} × ${cfg.Dllm}`, feat: cfg.Dllm, vol: d.vol.projected, note: 'mapped to LLM dim' },
+    { c: C_TEXT, stage: 'Decoder input', shape: `${d.seqLen} × ${cfg.Dllm}`, feat: cfg.Dllm, vol: d.vol.decoder, note: `+${cfg.textTokens} text tokens` },
   ];
 
   return (
@@ -829,7 +1274,9 @@ function PlaygroundPage({ cfg, setCfg, d }) {
                   <tr className="bg-neutral-50 text-left">
                     <th className="p-2 font-semibold">Stage</th>
                     <th className="p-2 font-semibold font-mono">Shape</th>
-                    <th className="p-2 font-semibold hidden md:table-cell">Note</th>
+                    <th className="p-2 font-semibold font-mono text-right">Feature dim</th>
+                    <th className="p-2 font-semibold font-mono text-right">Volume</th>
+                    <th className="p-2 font-semibold hidden lg:table-cell">Note</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -837,7 +1284,9 @@ function PlaygroundPage({ cfg, setCfg, d }) {
                     <tr key={i} className="border-t" style={{ background: r.c + '06' }}>
                       <td className="p-2 font-medium" style={{ color: r.c }}>{r.stage}</td>
                       <td className="p-2 font-mono font-bold" style={{ color: r.c }}>[ {r.shape} ]</td>
-                      <td className="p-2 text-muted-foreground hidden md:table-cell">{r.note}</td>
+                      <td className="p-2 font-mono text-right" style={{ color: r.c }}>{r.feat.toLocaleString()}</td>
+                      <td className="p-2 font-mono text-right font-semibold" style={{ color: r.c }}>{fmtCompact(r.vol)}</td>
+                      <td className="p-2 text-muted-foreground hidden lg:table-cell">{r.note}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -880,7 +1329,9 @@ export default function VitPipelineVisualizer() {
       case 3: return <EncoderPage d={d} cfg={cfg} />;
       case 4: return <CompressPage d={d} cfg={cfg} />;
       case 5: return <DecoderPage d={d} cfg={cfg} />;
-      case 6: return <PlaygroundPage cfg={cfg} setCfg={editCfg} d={d} />;
+      case 6: return <IllusionPage d={d} cfg={cfg} />;
+      case 7: return <VolumePage d={d} cfg={cfg} />;
+      case 8: return <PlaygroundPage cfg={cfg} setCfg={editCfg} d={d} />;
       default: return null;
     }
   }, [page, d, cfg]);
@@ -896,7 +1347,7 @@ export default function VitPipelineVisualizer() {
         </div>
 
         {/* Global config bar (hidden on playground, which has its own controls) */}
-        {page !== 6 && <PresetBar presetKey={presetKey} setPreset={setPreset} d={d} cfg={cfg} />}
+        {pages[page].id !== 'playground' && <PresetBar presetKey={presetKey} setPreset={setPreset} d={d} cfg={cfg} />}
 
         {/* Navigation */}
         <Card className="rounded-3xl shadow-sm">

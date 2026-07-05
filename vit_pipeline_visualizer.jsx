@@ -16,8 +16,8 @@ const pages = [
   { id: 'encoder',  title: 'Inside the ViT encoder',     subtitle: 'Attention + MLP shapes through one transformer block' },
   { id: 'compress', title: '2×2 visual-token compression', subtitle: 'Pixel-shuffle / patch-merge: 4 tokens → 1' },
   { id: 'decoder',  title: 'Into the text decoder',       subtitle: 'Projector, sequence assembly, autoregressive decode' },
-  { id: 'tokens',   title: 'Image vs text: the compression illusion', subtitle: 'Side-by-side paths, compute at every phase, and what reaches the decoder' },
   { id: 'volume',   title: 'Feature width & data volume',  subtitle: 'How thick each token is, and how much data flows at each stage' },
+  { id: 'tokens',   title: 'Image vs text: the compression illusion', subtitle: 'Side-by-side paths, compute at every phase, and what reaches the decoder' },
   { id: 'playground', title: 'Shape playground',          subtitle: 'Turn every knob, watch every tensor recompute' },
 ];
 
@@ -234,6 +234,16 @@ function Arrow({ label, sub, color = C_GREY, vertical }) {
   );
 }
 
+// A subtle end-of-chapter pointer that keeps the narrative flowing between chapters.
+function NextUp({ children }) {
+  return (
+    <div className="flex items-center gap-2 pl-1 pt-1 text-xs text-muted-foreground">
+      <span className="font-semibold uppercase tracking-wider" style={{ color: C_COMP }}>Next</span>
+      <span>→ {children}</span>
+    </div>
+  );
+}
+
 // ─── The compact preset bar shown on every chapter ─────────────────────────────
 
 function PresetBar({ presetKey, setPreset, d, cfg }) {
@@ -317,11 +327,16 @@ function OverviewPage({ d, cfg }) {
               <Arrow label={`${cfg.layers}× blocks`} sub="attn+MLP" color={C_ATTN} />
               <FlowStage color={C_ATTN} title="Encoded" shape={`${d.seqIn}×${cfg.D}`} note="shape preserved" />
               <Arrow label="2×2 merge" sub="4→1" color={C_COMP} />
-              <FlowStage color={C_COMP} title="Compressed" shape={`${d.visualTokens}×${cfg.D}`} note={`${d.compressRatio}× fewer tokens`} />
+              <FlowStage color={C_COMP} title="Compressed" shape={`${d.visualTokens}×${cfg.D}`} note={d.compressRatio > 1 ? `${d.compressRatio}× fewer tokens` : 'no merge (1×)'} />
               <Arrow label="projector" sub={`→ ${cfg.Dllm}`} color={C_TEXT} />
               <FlowStage color={C_TEXT} title="LLM input" shape={`${d.seqLen}×${cfg.Dllm}`} note={`${d.visualTokens} vis + ${cfg.textTokens} text`} />
             </div>
           </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Each chapter that follows zooms into <strong>one arrow</strong> of this diagram — patchify, embed, encode,
+            compress, decode — then two synthesis chapters step back to the whole picture (data volume, and image-vs-text).
+            Switch the <strong>Config</strong> presets above at any time; every number on every chapter recomputes to match.
+          </p>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Stat label="patches from image" value={d.N.toLocaleString()} color={C_PATCH} mono />
@@ -355,6 +370,8 @@ function OverviewPage({ d, cfg }) {
           ))}
         </CardContent>
       </Card>
+
+      <NextUp>Patchify — how the image becomes that first <span className="font-mono">[N × patch_dim]</span> sequence.</NextUp>
     </div>
   );
 }
@@ -461,6 +478,8 @@ function PatchifyPage({ d, cfg }) {
           </div>
         </CardContent>
       </Card>
+
+      <NextUp>Patch &amp; position embedding — projecting each patch into the model's working width <span className="font-mono">D</span>.</NextUp>
     </div>
   );
 }
@@ -529,6 +548,8 @@ function EmbedPage({ d, cfg }) {
           </div>
         </CardContent>
       </Card>
+
+      <NextUp>Inside the ViT encoder — where these tokens finally look at each other.</NextUp>
     </div>
   );
 }
@@ -552,7 +573,9 @@ function EncoderPage({ d, cfg }) {
             The encoder is <strong>{cfg.layers} identical blocks</strong> stacked back-to-back. The remarkable part:
             the tensor goes in as <span className="font-mono">[{N} × {cfg.D}]</span> and comes out as{' '}
             <span className="font-mono">[{N} × {cfg.D}]</span> — <strong>the shape never changes</strong>. Inside, though,
-            it fans out into multi-head attention and a wide MLP.
+            it fans out into multi-head attention and a wide MLP. Self-attention lets every patch look at every other patch,
+            so the tokens that come out are <strong>contextualized</strong> — each one now encodes information from across
+            the whole image, not just its own {cfg.P}×{cfg.P}px tile.
           </p>
 
           <div className="grid lg:grid-cols-2 gap-6 items-start">
@@ -602,6 +625,8 @@ function EncoderPage({ d, cfg }) {
           </div>
         </CardContent>
       </Card>
+
+      <NextUp>2×2 compression — cutting the contextualized token count before the decoder.</NextUp>
     </div>
   );
 }
@@ -610,34 +635,13 @@ function EncoderPage({ d, cfg }) {
 // CHAPTER 4 — 2×2 compression (pixel shuffle / patch merge)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function MergeGrid({ grid, merge, size = 260 }) {
-  const cell = size / grid;
-  const groups = [];
-  const mg = Math.floor(grid / merge);
-  for (let r = 0; r < mg; r++) for (let c = 0; c < mg; c++) groups.push({ r, c });
-  return (
-    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} className="rounded-lg border" style={{ background: '#f8fafc', maxWidth: '100%' }}>
-      {Array.from({ length: grid }).map((_, r) =>
-        Array.from({ length: grid }).map((_, c) => (
-          <rect key={`${r}-${c}`} x={c * cell} y={r * cell} width={cell} height={cell}
-            fill={C_PATCH} fillOpacity={0.12 + ((r + c) % 2) * 0.08} stroke="#fff" strokeWidth={0.5} />
-        ))
-      )}
-      {groups.map((g, i) => (
-        <rect key={i} x={g.c * merge * cell} y={g.r * merge * cell}
-          width={merge * cell} height={merge * cell}
-          fill="none" stroke={C_COMP} strokeWidth={2} />
-      ))}
-    </svg>
-  );
-}
-
 function CompressPage({ d, cfg }) {
   const m = cfg.merge;
   if (m === 1) {
     return (
       <div className="space-y-6">
         <PresetNote d={d} cfg={cfg} />
+        <NextUp>Into the text decoder — where visual tokens join the prompt.</NextUp>
       </div>
     );
   }
@@ -653,8 +657,10 @@ function CompressPage({ d, cfg }) {
             After the encoder we still have <span className="font-mono">{d.N.toLocaleString()}</span> tokens — too many
             for the LLM. The fix (pixel-shuffle / patch-merge) reshapes the token grid back to 2D, groups it into{' '}
             <span className="font-mono">{m}×{m}</span> blocks, and <strong>concatenates each block's {m * m} vectors along
-            the channel axis</strong>. Fewer tokens, but each is {m * m}× wider — no information is thrown away, it's moved
-            from the sequence axis into the feature axis.
+            the channel axis</strong>. That concat itself is lossless — it just moves data from the sequence axis into the
+            feature axis ({m * m}× wider tokens). The small MLP that follows is what actually squeezes those wide tokens
+            back down to <span className="font-mono">D</span>, and <em>that</em> step is where the real (lossy) compression
+            happens.
           </p>
 
           <div className="grid md:grid-cols-2 gap-6 items-start">
@@ -662,7 +668,7 @@ function CompressPage({ d, cfg }) {
               <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {cfg.grid}×{cfg.grid} token grid → {d.mergedGrid}×{d.mergedGrid} groups (teal = one output token)
               </div>
-              <MergeGrid grid={cfg.grid} merge={m} />
+              <PatchGrid grid={cfg.grid} merge={m} src={IMG_DOC} size={260} lineOpacity={0.45} />
               <div className="text-xs text-muted-foreground text-center">
                 {d.N.toLocaleString()} tokens → {d.visualTokens.toLocaleString()} tokens · {d.compressRatio}× reduction
               </div>
@@ -692,6 +698,8 @@ function CompressPage({ d, cfg }) {
           </div>
         </CardContent>
       </Card>
+
+      <NextUp>Into the text decoder — where visual tokens join the prompt.</NextUp>
     </div>
   );
 }
@@ -786,12 +794,15 @@ function DecoderPage({ d, cfg }) {
           </InfoBox>
         </CardContent>
       </Card>
+
+      <NextUp>Feature width &amp; data volume — the two quantities to track through all of this.</NextUp>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHAPTER 6 — Image vs text: the compression illusion
+// CHAPTER 7 — Image vs text: the compression illusion
+// (rendered after the volume chapter; defined here so hoisted helpers stay together)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // One phase in a path: shape, volume, compute this phase, and cumulative-compute meter.
@@ -983,10 +994,10 @@ function IllusionPage({ d, cfg }) {
         </CardHeader>
         <CardContent className="p-6 pt-2 space-y-5">
           <p className="text-sm opacity-85 leading-relaxed">
-            The trick to your friend's puzzle: a <strong>"token" is a sequence slot, not a unit of information</strong>.
-            Both paths hand the decoder the <em>same-size</em> {cfg.Dllm}-dim vectors — the only question is how densely
-            each slot is filled. The vision path spends compute to <strong>pack many glyphs into each slot</strong>; text
-            tokenization deliberately puts ~one sub-word per slot.
+            Here is the resolution to the apparent paradox: a <strong>"token" is a sequence slot, not a unit of
+            information</strong>. Both paths hand the decoder the <em>same-size</em> {cfg.Dllm}-dim vectors — the only
+            question is how densely each slot is filled. The vision path spends compute to <strong>pack many glyphs into
+            each slot</strong>; text tokenization deliberately puts ~one sub-word per slot.
           </p>
 
           <div className="grid md:grid-cols-2 gap-6">
@@ -1045,12 +1056,14 @@ function IllusionPage({ d, cfg }) {
           </div>
         </CardContent>
       </Card>
+
+      <NextUp>The shape playground — turn every knob yourself and watch all of this recompute.</NextUp>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHAPTER 7 — Feature width & data volume
+// CHAPTER 6 — Feature width & data volume
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function fmtCompact(n) {
@@ -1185,6 +1198,8 @@ function VolumePage({ d, cfg }) {
           </InfoBox>
         </CardContent>
       </Card>
+
+      <NextUp>Image vs text — putting compute, volume, and density together to resolve the compression illusion.</NextUp>
     </div>
   );
 }
@@ -1329,8 +1344,8 @@ export default function VitPipelineVisualizer() {
       case 3: return <EncoderPage d={d} cfg={cfg} />;
       case 4: return <CompressPage d={d} cfg={cfg} />;
       case 5: return <DecoderPage d={d} cfg={cfg} />;
-      case 6: return <IllusionPage d={d} cfg={cfg} />;
-      case 7: return <VolumePage d={d} cfg={cfg} />;
+      case 6: return <VolumePage d={d} cfg={cfg} />;
+      case 7: return <IllusionPage d={d} cfg={cfg} />;
       case 8: return <PlaygroundPage cfg={cfg} setCfg={editCfg} d={d} />;
       default: return null;
     }
